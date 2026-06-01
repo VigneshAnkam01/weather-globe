@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "globe.gl": "^2.35.0"
+    "cesium": "^1.142.0",
+    "globe.gl": "^2.35.0",
+    "vite-plugin-cesium": "^1.2.23"
   },
   "devDependencies": {
     "netlify-cli": "^26.1.0",

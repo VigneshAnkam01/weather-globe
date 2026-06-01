@@ -17,11 +17,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 
-  <!-- Load Three.js first so globe.gl shares the same THREE namespace -->
-  <script src="https://unpkg.com/three@0.162.0/build/three.min.js"></script>
-  <!-- Import Globe.gl from UMD CDN -->
-  <script src="https://unpkg.com/globe.gl@2.41.3/dist/globe.gl.min.js"></script>
-  <!-- Design System & Complete Stylesheet -->
+  <!-- CesiumJS CSS is injected by vite-plugin-cesium or we can load it -->
+  <!-- We will load Cesium via ES module in the script block below -->
   <style>
     /* ---------- CSS Custom Properties ---------- */
     :root {
@@ -1205,7 +1202,8 @@
   </div>
 
   <!-- Application Logic & Orchestrator -->
-  <script>
+  <script type="module">
+    import { initCesiumGlobe } from './src/cesium-globe.js';
     /* ---------- Global Constants ---------- */
     const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
       ? 'http://localhost:5000'
@@ -2139,30 +2137,25 @@
     }
 
     function updateGlobePins() {
-      if (!globe) return;
+      // In Cesium, we will use Entities for pins.
+      if (!window.cesiumViewer) return;
       
       const pinPoints = globalPins.map(p => ({
-        lat: Number(p.lat),
-        lng: Number(p.lng),
-        size: 0.1,
-        color: '#f59e0b', // amber for community reports
-        radius: 0.3,
-        name: `👤 ${p.username}: "${p.message}" (${p.temp})`
+        lat: p.lat,
+        lng: p.lng,
+        size: 0.15,
+        color: '#f59e0b',
+        name: p.message
       }));
 
-      // Add a highly visible red pinpoint for the currently searched/clicked location!
-      if (currentLat !== null && currentLng !== null) {
-        pinPoints.push({
-          lat: currentLat,
-          lng: currentLng,
-          size: 0.25,       // larger size standing out
-          color: '#ef4444', // vibrant red pinpoint!
-          radius: 0.5,      // larger radius
-          name: `📍 Selected Location: ${currentLat.toFixed(2)}°, ${currentLng.toFixed(2)}°`
+      // Add pins to Cesium (simple implementation for now)
+      pinPoints.forEach(p => {
+        window.cesiumViewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(p.lng, p.lat),
+          point: { pixelSize: 10, color: Cesium.Color.fromCssColorString('#f59e0b') },
+          label: { text: p.name, font: '14px sans-serif', showBackground: true, pixelOffset: new Cesium.Cartesian2(0, -20) }
         });
-      }
-
-      globe.pointsData(pinPoints);
+      });
     }
 
     async function postSharedSearch(lat, lng, city, temp, condition) {
@@ -2191,16 +2184,7 @@
         return;
       }
 
-      // Stop globe auto-rotation immediately on any active click/search/pin/ticker interaction!
-      if (globe) {
-        try {
-          const controls = globe.controls();
-          if (controls) {
-            controls.autoRotate = false;
-            controls.update();
-          }
-        } catch {}
-      }
+      // In Cesium, camera movement is handled via flyTo later down.
 
       if (isLoading) return;
 
@@ -2224,21 +2208,16 @@
         // Start skeleton loaders
         showLoading();
 
-        // WebGL Globe Fly-To camera transition and rings ripple plot (deferred to prevent WebGL blocking)
-        if (globe) {
-          const currentPov = globe.pointOfView();
-          let targetAltitude = 0.2;
-          if (currentPov && typeof currentPov.altitude === 'number' && !isNaN(currentPov.altitude)) {
-            // Keep the user's high-resolution close zoom, bounded safely between 0.05 (near street) and 0.25 (overview)
-            targetAltitude = Math.max(Math.min(currentPov.altitude, 0.25), 0.05);
-          }
+        // Cesium Camera Fly-To transition
+        if (window.cesiumViewer) {
+          const currentHeight = window.cesiumViewer.camera.positionCartographic.height;
+          // Keep the user's high-resolution close zoom, bounded safely
+          const targetAltitude = Math.max(Math.min(currentHeight, 2500000), 500);
           
-          setTimeout(() => {
-            if (globe) {
-              globe.pointOfView({ lat: safeLat, lng: normalizedLng, altitude: targetAltitude }, 1400);
-              globe.ringsData([{ lat: safeLat, lng: normalizedLng, maxR: 4, propagationSpeed: 3, repeatPeriod: 1200 }]);
-            }
-          }, 50);
+          window.cesiumViewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(normalizedLng, safeLat, targetAltitude),
+            duration: 1.4
+          });
         }
 
         // Fetch weather + location reverse lookup + borders outlines in non-blocking parallel!
@@ -2292,9 +2271,10 @@
 
         // Reset any country highlights to maintain a clean globe model
         if (globe) {
-          globe.selectedCountryCode = '';
-          globe.currentStateBoundary = null;
-          globe.currentCityBoundary = null;
+          // Clear variables
+          window.selectedCountryCode = '';
+          window.currentStateBoundary = null;
+          window.currentCityBoundary = null;
         }
 
         // Update theme
@@ -2557,331 +2537,32 @@
 
     /* ---------- Application Boot Orchestration ---------- */
 
-    function boot() {
+    async function boot() {
       // 1. Initialize Globe.gl WebGL with reliable satellite imagery
       try {
         const container = document.getElementById('globe-container');
         if (container) {
-          globe = Globe({ animateIn: false })(container)
-            .globeTileEngineUrl((x, y, l) => `https://mt1.google.com/vt/lyrs=y&x=${x}&y=${y}&z=${l}`)
-            .bumpImageUrl('https://unpkg.com/three-globe@2.41.2/example/img/earth-topology.png')
-            .backgroundImageUrl('//unpkg.com/three-globe@2.41.2/example/img/night-sky.png')
-            .ringColor(() => '#3b82f6')
-            .ringMaxRadius('maxR')
-            .ringPropagationSpeed('propagationSpeed')
-            .ringRepeatPeriod('repeatPeriod')
-            .pointColor('color')
-            .pointAltitude('size')
-            .pointRadius('radius')
-            .pointLabel('name')
-            .onPointClick(d => handleGlobeClick(d.lat, d.lng))
-            // City labels (shown when zoomed in)
-            .labelsData([])
-            .labelLat(d => d.lat)
-            .labelLng(d => d.lng)
-            .labelText(d => d.name)
-            .labelSize(d => d._isCountry ? 0.45 : 0.9)
-            .labelDotRadius(d => d._isCountry ? 0 : 0.2)
-            .labelColor(d => d._isCountry ? 'rgba(255, 255, 255, 0.55)' : 'rgba(255, 255, 255, 0.95)')
-            .labelResolution(3)
-            .labelAltitude(d => d._isCountry ? 0.005 : 0.01)
-            .onLabelClick(d => handleGlobeClick(d.lat, d.lng))
-            // Country name HTML elements on globe surface
-            .htmlElementsData(COUNTRY_LABELS)
-            .htmlLat(d => d.lat)
-            .htmlLng(d => d.lng)
-            .htmlAltitude(0.005)
-            .htmlElement(d => {
-              const el = document.createElement('div');
-              el.className = 'country-label-3d';
-              el.textContent = d.name;
-              el.style.cssText = 'color: rgba(255,255,255,0.6); font-size: 9px; font-family: Inter, sans-serif; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; text-shadow: 0 1px 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.5); pointer-events: none; white-space: nowrap; transform: translate(-50%, -50%);';
-              return el;
-            });
-
-          // Set up Globe click handler
-          globe.onGlobeClick(({ lat, lng }) => {
-            try {
-              const controls = globe.controls();
-              if (controls) controls.autoRotate = false;
-            } catch {}
-            
-            // Dismiss open weather panel, then load new location
-            const panel = document.getElementById('weather-panel');
-            if (panel && panel.classList.contains('visible')) {
-              panel.classList.remove('visible');
-            }
-            handleGlobeClick(lat, lng);
-          });
-
-          // Configure OrbitControls for ground-level close zoom
-          const controls = globe.controls();
-          if (controls) {
-            controls.minDistance = 101.5; // Unlocks deep, detailed close zooming!
-            controls.maxDistance = 2000;
-            controls.autoRotate = true;
-            controls.autoRotateSpeed = 0.4;
-            controls.enableDamping = false; // Disable damping to prevent conflicts with programmatic camera transitions
-            controls.zoomSpeed = 2.5;
-          }
-
-          // Toggle 3D city labels so space view stays clean
-          globe.onZoom((pov) => {
-            if (pov && pov.altitude <= 1.8) {
-              if (globe.labelsData().length === 0) globe.labelsData(MAJOR_CITIES);
-            } else {
-              if (globe.labelsData().length > 0) globe.labelsData([]);
-            }
-          });
-
-          // 2. Realistic Sun Lighting, Clouds & Starfield
-          setTimeout(() => {
-            try {
-              // Enable atmosphere
-              globe.showAtmosphere(true)
-                   .atmosphereColor('#63a4ff')
-                   .atmosphereAltitude(0.15);
-
-              if (typeof THREE === 'undefined') return;
-              const scene = globe.scene();
-
-              // --- Real Sun Position based on UTC time ---
-              function getSunPosition() {
-                const now = new Date();
-                const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
-                const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60;
-                // Sun longitude: noon at 0° when UTC=12
-                const sunLng = (12 - utcHours) * 15;
-                // Sun latitude: approximate declination
-                const declination = 23.44 * Math.sin((2 * Math.PI / 365) * (dayOfYear - 81));
-                return { lat: declination, lng: sunLng };
-              }
-
-              const sunPos = getSunPosition();
-              const sunLatRad = sunPos.lat * Math.PI / 180;
-              const sunLngRad = sunPos.lng * Math.PI / 180;
-              const sunDist = 400;
-              const sunX = sunDist * Math.cos(sunLatRad) * Math.sin(sunLngRad);
-              const sunY = sunDist * Math.sin(sunLatRad);
-              const sunZ = sunDist * Math.cos(sunLatRad) * Math.cos(sunLngRad);
-
-              // --- Directional Sun Light with shadow ---
-              const sunLight = new THREE.DirectionalLight(0xfff5e0, 2.2);
-              sunLight.position.set(sunX, sunY, sunZ);
-              sunLight.castShadow = true;
-              sunLight.shadow.mapSize.width = 2048;
-              sunLight.shadow.mapSize.height = 2048;
-              sunLight.shadow.camera.near = 100;
-              sunLight.shadow.camera.far = 800;
-              sunLight.shadow.camera.left = -150;
-              sunLight.shadow.camera.right = 150;
-              sunLight.shadow.camera.top = 150;
-              sunLight.shadow.camera.bottom = -150;
-              sunLight.shadow.bias = -0.001;
-              scene.add(sunLight);
-
-              // Soft fill light on the dark side
-              const ambientLight = new THREE.AmbientLight(0x1a2a4a, 0.4);
-              scene.add(ambientLight);
-
-              // Hemisphere light for subtle sky/ground color
-              const hemiLight = new THREE.HemisphereLight(0x4488cc, 0x112244, 0.3);
-              scene.add(hemiLight);
-
-              // Small sun glow sphere at the sun position
-              const sunGlowGeo = new THREE.SphereGeometry(8, 32, 32);
-              const sunGlowMat = new THREE.MeshBasicMaterial({ color: 0xfffbe0 });
-              const sunGlowMesh = new THREE.Mesh(sunGlowGeo, sunGlowMat);
-              sunGlowMesh.position.set(sunX, sunY, sunZ);
-              scene.add(sunGlowMesh);
-
-              // Sun corona (lens flare effect with a larger transparent sphere)
-              const coronaGeo = new THREE.SphereGeometry(18, 32, 32);
-              const coronaMat = new THREE.MeshBasicMaterial({
-                color: 0xfff5c0,
-                transparent: true,
-                opacity: 0.15
-              });
-              const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
-              coronaMesh.position.set(sunX, sunY, sunZ);
-              scene.add(coronaMesh);
-
-              // Update sun position every 60 seconds
-              setInterval(() => {
-                const sp = getSunPosition();
-                const slr = sp.lat * Math.PI / 180;
-                const slnr = sp.lng * Math.PI / 180;
-                const sx = sunDist * Math.cos(slr) * Math.sin(slnr);
-                const sy = sunDist * Math.sin(slr);
-                const sz = sunDist * Math.cos(slr) * Math.cos(slnr);
-                sunLight.position.set(sx, sy, sz);
-                sunGlowMesh.position.set(sx, sy, sz);
-                coronaMesh.position.set(sx, sy, sz);
-              }, 60000);
-
-              // Enable shadow rendering
-              try {
-                const renderer = globe.renderer();
-                if (renderer) {
-                  renderer.shadowMap.enabled = true;
-                  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-                }
-              } catch(e) {}
-
-              // --- Remove globe.gl default lights and add our own ---
-              // Globe.gl adds its own ambient + directional. Remove them to let our sun be the primary light.
-              const toRemove = [];
-              scene.children.forEach(child => {
-                if (child.isAmbientLight && child !== ambientLight) toRemove.push(child);
-                if (child.isDirectionalLight && child !== sunLight) toRemove.push(child);
-              });
-              toRemove.forEach(l => scene.remove(l));
-
-              // --- 3D Cloud Layer ---
-              const cloudsGeometry = new THREE.SphereGeometry(101, 80, 80);
-              const cloudTexLoader = new THREE.TextureLoader();
-              const cloudsTexture = cloudTexLoader.load('https://unpkg.com/three-globe@2.41.2/example/img/earth-clouds.png');
-              const cloudsMaterial = new THREE.MeshPhongMaterial({
-                map: cloudsTexture,
-                transparent: true,
-                opacity: 0.35,
-                depthWrite: false,
-                side: THREE.DoubleSide
-              });
-              const cloudsMesh = new THREE.Mesh(cloudsGeometry, cloudsMaterial);
-              cloudsMesh.receiveShadow = true;
-              scene.add(cloudsMesh);
-
-              // Rotate clouds slowly
-              (function rotateClouds() {
-                cloudsMesh.rotation.y += 0.00008;
-                cloudsMesh.rotation.x += 0.00002;
-                requestAnimationFrame(rotateClouds);
-              })();
-
-              // --- Real-time weather overlay (Open-Meteo precipitation) ---
-              // Add precipitation/cloud cover heatmap tile layer as a second globe texture
-              try {
-                const weatherTexLoader = new THREE.TextureLoader();
-                // Use OpenWeatherMap free cloud overlay tiles
-                const weatherCloudUrl = 'https://tile.openweathermap.org/map/clouds_new/0/0/0.png?appid=demo';
-                // Fallback: use a semi-transparent weather-like overlay
-                const overlayGeo = new THREE.SphereGeometry(100.3, 64, 64);
-                const overlayMat = new THREE.MeshPhongMaterial({
-                  transparent: true,
-                  opacity: 0,
-                  depthWrite: false
-                });
-                const overlayMesh = new THREE.Mesh(overlayGeo, overlayMat);
-                scene.add(overlayMesh);
-              } catch(e) {}
-
-              // --- Deep Space Starfield ---
-              const starGeometry = new THREE.BufferGeometry();
-              const starMaterial = new THREE.PointsMaterial({
-                color: 0xffffff,
-                size: 0.7,
-                sizeAttenuation: true
-              });
-              const starVertices = [];
-              for (let i = 0; i < 8000; i++) {
-                const x = (Math.random() - 0.5) * 2000;
-                const y = (Math.random() - 0.5) * 2000;
-                const z = (Math.random() - 0.5) * 2000;
-                if (Math.sqrt(x*x + y*y + z*z) > 300) starVertices.push(x, y, z);
-              }
-              starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
-              const stars = new THREE.Points(starGeometry, starMaterial);
-              scene.add(stars);
-
-              // --- Solar System Planets ---
-              if (SOLAR_PLANETS && SOLAR_PLANETS.length > 0) {
-                const planetMeshes = [];
-                // Central Sun (already have sunGlowMesh, but let's make it the center of rotation)
-                // Actually the user wants to see planets around the globe.
-                // Let's create orbit paths and planets around the center (Earth)
-                SOLAR_PLANETS.forEach(pData => {
-                  // Planet mesh
-                  const pGeo = new THREE.SphereGeometry(pData.radius, 32, 32);
-                  const pMat = new THREE.MeshPhongMaterial({
-                    color: pData.color,
-                    emissive: pData.emissive,
-                    shininess: 10
-                  });
-                  const pMesh = new THREE.Mesh(pGeo, pMat);
-                  
-                  // Orbit Ring
-                  const rGeo = new THREE.RingGeometry(pData.orbitRadius - 0.5, pData.orbitRadius + 0.5, 64);
-                  const rMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.1, side: THREE.DoubleSide });
-                  const rMesh = new THREE.Mesh(rGeo, rMat);
-                  rMesh.rotation.x = Math.PI / 2;
-                  // Apply slight tilt to orbit
-                  rMesh.rotation.y = pData.tilt;
-                  scene.add(rMesh);
-
-                  // Pivot for rotation
-                  const pivot = new THREE.Object3D();
-                  pivot.rotation.z = pData.tilt; // Tilt the orbit plane slightly
-                  pivot.add(pMesh);
-                  scene.add(pivot);
-
-                  // Add Saturn's ring if applicable
-                  if (pData.hasRing) {
-                    const satRingGeo = new THREE.RingGeometry(pData.radius * 1.5, pData.radius * 2.5, 32);
-                    const satRingMat = new THREE.MeshBasicMaterial({ color: 0xe8d5a3, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
-                    const satRing = new THREE.Mesh(satRingGeo, satRingMat);
-                    satRing.rotation.x = Math.PI / 2;
-                    pMesh.add(satRing);
-                  }
-
-                  // Initial offset
-                  const startAngle = Math.random() * Math.PI * 2;
-                  pMesh.position.set(Math.cos(startAngle) * pData.orbitRadius, 0, Math.sin(startAngle) * pData.orbitRadius);
-
-                  // Label
-                  const labelDiv = document.createElement('div');
-                  labelDiv.className = 'planet-label';
-                  labelDiv.textContent = pData.name;
-                  labelDiv.style.cssText = 'color: rgba(255,255,255,0.7); font-size: 11px; font-family: Inter, sans-serif; pointer-events: none; white-space: nowrap; transform: translate(-50%, -50%); text-shadow: 0 0 4px rgba(0,0,0,1);';
-                  
-                  // We can't use HTML2DObject easily without CSS2DRenderer, so we'll just track 3D positions 
-                  // and update 2D DOM elements in a render loop, but Globe.gl already has an animation loop.
-                  // For simplicity, we just render the 3D meshes for now.
-
-                  planetMeshes.push({ mesh: pMesh, pivot: pivot, data: pData });
-                });
-
-                // Animate planets
-                (function animatePlanets() {
-                  planetMeshes.forEach(p => {
-                    p.pivot.rotation.y += p.data.speed;
-                    p.mesh.rotation.y += 0.01; // spin on its axis
-                  });
-                  requestAnimationFrame(animatePlanets);
-                })();
-              }
-
-            } catch (sceneErr) {
-              console.error('Failed to inject Three.js layers:', sceneErr);
-            }
-          }, 1000);
+          globe = await initCesiumGlobe('globe-container', handleGlobeClick);
 
           // 3. Real-time Google Earth-style Coordinates Display on Hover
           container.addEventListener('mousemove', (event) => {
-            const rect = container.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
-            const coords = globe.toGlobeCoords(x, y);
-
             const display = document.getElementById('coords-display');
-            if (display) {
-              if (coords) {
-                const { lat, lng } = coords;
-                display.textContent = `📍 Lat: ${lat.toFixed(4)}° | Lng: ${lng.toFixed(4)}° | Elev: Sea Level`;
-                display.classList.add('visible');
-              } else {
-                display.classList.remove('visible');
-              }
+            if (!display || !window.cesiumViewer) return;
+            
+            const viewer = window.cesiumViewer;
+            const rect = container.getBoundingClientRect();
+            const position = new Cesium.Cartesian2(event.clientX - rect.left, event.clientY - rect.top);
+            const pickRay = viewer.camera.getPickRay(position);
+            const intersection = viewer.scene.globe.pick(pickRay, viewer.scene);
+            
+            if (intersection) {
+              const cartographic = Cesium.Cartographic.fromCartesian(intersection);
+              const lat = Cesium.Math.toDegrees(cartographic.latitude);
+              const lng = Cesium.Math.toDegrees(cartographic.longitude);
+              display.textContent = `📍 Lat: ${lat.toFixed(4)}° | Lng: ${lng.toFixed(4)}° | Elev: Sea Level`;
+              display.classList.add('visible');
+            } else {
+              display.classList.remove('visible');
             }
           });
         }

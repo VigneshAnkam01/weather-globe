@@ -2563,7 +2563,7 @@
         const container = document.getElementById('globe-container');
         if (container) {
           globe = Globe({ animateIn: false })(container)
-            .globeImageUrl('https://unpkg.com/three-globe@2.41.2/example/img/earth-blue-marble.jpg')
+            .globeTileEngineUrl((x, y, l) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${l}/${y}/${x}`)
             .bumpImageUrl('https://unpkg.com/three-globe@2.41.2/example/img/earth-topology.png')
             .backgroundImageUrl('//unpkg.com/three-globe@2.41.2/example/img/night-sky.png')
             .ringColor(() => '#3b82f6')
